@@ -5,6 +5,7 @@ const http = require('http');
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
+const crypto = require('crypto');
 const { Server } = require('socket.io');
 const { BotInstance } = require('./lib/botManager');
 
@@ -24,7 +25,112 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { maxHttpBufferSize: 5e6 });
 
-app.use(express.json());
+// ============================================================
+// AUTH - dang nhap bang mat khau bi mat (bien moi truong PANEL_PASSWORD)
+// ============================================================
+const PANEL_PASSWORD = process.env.PANEL_PASSWORD || '';
+if (!PANEL_PASSWORD) {
+  console.error('[LOI] Chua dat bien moi truong PANEL_PASSWORD. Vi du: PANEL_PASSWORD=matkhau_cua_ban npm start');
+  process.exit(1);
+}
+const SESSION_SECRET = process.env.SESSION_SECRET
+  || crypto.createHash('sha256').update('kingsmp-session:' + PANEL_PASSWORD).digest('hex');
+const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const COOKIE_NAME = 'kingsmp_auth';
+
+function sha256(text) { return crypto.createHash('sha256').update(String(text)).digest(); }
+function passwordMatches(input) {
+  return crypto.timingSafeEqual(sha256(input), sha256(PANEL_PASSWORD));
+}
+function signSession(expires) {
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(String(expires)).digest('hex');
+  return expires + '.' + sig;
+}
+function verifySession(token) {
+  if (!token) return false;
+  const [expires, sig] = String(token).split('.');
+  if (!expires || !sig || !/^\d+$/.test(expires) || Number(expires) < Date.now()) return false;
+  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(expires).digest('hex');
+  const a = Buffer.from(sig);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+function parseCookies(header) {
+  const out = {};
+  String(header || '').split(';').forEach((part) => {
+    const i = part.indexOf('=');
+    if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+  });
+  return out;
+}
+function isAuthed(req) { return verifySession(parseCookies(req.headers.cookie)[COOKIE_NAME]); }
+
+// Gioi han dang nhap sai: 5 lan / IP -> khoa 15 phut
+const loginFails = new Map();
+const MAX_FAILS = 5;
+const LOCK_MS = 15 * 60 * 1000;
+function lockRemaining(ip) {
+  const rec = loginFails.get(ip);
+  if (!rec || rec.count < MAX_FAILS) return 0;
+  const left = rec.last + LOCK_MS - Date.now();
+  if (left <= 0) { loginFails.delete(ip); return 0; }
+  return left;
+}
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of loginFails) if (now - rec.last > LOCK_MS) loginFails.delete(ip);
+}, 10 * 60 * 1000).unref();
+
+app.set('trust proxy', 1); // Render dat sau reverse proxy
+app.use(express.json({ limit: '100kb' }));
+
+app.post('/login', (req, res) => {
+  const left = lockRemaining(req.ip);
+  if (left) {
+    return res.status(429).json({ ok: false, error: 'Sai qua nhieu lan. Thu lai sau ' + Math.ceil(left / 60000) + ' phut.' });
+  }
+  const password = String((req.body && req.body.password) || '');
+  if (!password || !passwordMatches(password)) {
+    const rec = loginFails.get(req.ip) || { count: 0, last: 0 };
+    rec.count += 1; rec.last = Date.now();
+    loginFails.set(req.ip, rec);
+    return res.status(401).json({ ok: false, error: 'Mat khau khong dung.' });
+  }
+  loginFails.delete(req.ip);
+  const token = signSession(Date.now() + SESSION_TTL_MS);
+  res.cookie(COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: req.secure,
+    maxAge: SESSION_TTL_MS,
+    path: '/'
+  });
+  res.json({ ok: true });
+});
+
+app.post('/logout', (_req, res) => {
+  res.clearCookie(COOKIE_NAME, { path: '/' });
+  res.json({ ok: true });
+});
+
+app.get(['/login', '/login.html'], (req, res) => {
+  if (isAuthed(req)) return res.redirect('/');
+  res.sendFile(path.join(__dirname, 'public', 'login.html'));
+});
+
+// Moi thu con lai (giao dien, /api, socket.io) deu can dang nhap
+app.use((req, res, next) => {
+  if (isAuthed(req)) return next();
+  if (req.path.startsWith('/api/')) return res.status(401).json({ ok: false, error: 'Chua dang nhap.' });
+  return res.redirect('/login');
+});
+
+io.use((socket, next) => {
+  const token = parseCookies(socket.handshake.headers.cookie)[COOKIE_NAME];
+  if (verifySession(token)) return next();
+  next(new Error('unauthorized'));
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 const bots = new Map();
