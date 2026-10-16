@@ -147,3 +147,6 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# KingSMP: chua mat khau acc Minecraft - KHONG day len git
+accounts.json
