@@ -33,7 +33,7 @@
         <div class="breadcrumb"><span>KingSMP</span><span class="breadcrumb-slash">/</span><strong id="page-breadcrumb">Tài khoản</strong></div>
         <div class="page-heading"><h1 id="page-title">Tài khoản</h1><p id="page-description">Quản lý danh sách bot đa tài khoản.</p></div>
       </div>
-      <div class="topbar-actions"><button class="icon-button" id="theme-toggle" type="button"><span id="theme-icon">☀</span></button></div>
+      <div class="topbar-actions"><button class="icon-button" id="theme-toggle" type="button"><span id="theme-icon">☀</span></button><button class="icon-button" id="logout-btn" type="button" aria-label="Đăng xuất" title="Đăng xuất">⏻</button></div>
     </header>
 
     <section class="page-view active" id="page-accounts" data-page-view="accounts">
@@ -188,6 +188,12 @@
 </div>
 <div class="toast-stack" id="toast-stack"></div>
 <script src="/socket.io/socket.io.js"></script>
+<script>
+document.getElementById('logout-btn').addEventListener('click', async function () {
+  try { await fetch('/logout', { method: 'POST' }); } catch (_) {}
+  location.href = '/login';
+});
+</script>
 <script src="/app.js"></script>
 <script src="/vision.js"></script>
 </body>
